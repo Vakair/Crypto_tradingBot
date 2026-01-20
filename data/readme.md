@@ -1,0 +1,2 @@
+- https://www.kaggle.com/datasets/imtkaggleteam/top-100-cryptocurrency-2020-2025
+- A baselinejaimhoz végül ezt a datasetet választottam ami egyezik az adatelmező résznél kidolgzottakkal csak ez tartalmazza a legújabb adatokat
