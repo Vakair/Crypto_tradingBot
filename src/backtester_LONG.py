@@ -11,7 +11,7 @@ class Backtester:
 
     def run_strategy(self, returns, signals):
         """
-        Look-Ahead Safe Backtesting.
+        Look-Ahead Safe Backtesting, valósághűbb napi Stop-Loss kezeléssel.
         """
         capital = [self.initial_capital]
         in_position = False
@@ -20,31 +20,42 @@ class Backtester:
         # Look-ahead safe loop (utolsó előtti napig)
         for i in range(len(returns) - 1):
             current_signal = signals[i]
-            next_return = returns[i + 1]  # A döntés a holnapi hozamra vonatkozik!
 
-            # --- STOP LOSS LOGIKA ---
-            force_sell = False
-            if in_position and next_return < -self.stop_loss_pct:
-                force_sell = True
-
-            #1 Kereskedési döntés
+            # --- 1️⃣ MAI DÖNTÉS ---
             # VÉTEL
             if current_signal == 1 and not in_position:
                 capital[-1] *= (1 - self.transaction_fee)
                 in_position = True
                 trade_count += 1
 
-            # ELADÁS
-            elif (current_signal == 0 or force_sell) and in_position:
+            # ELADÁS (normál szignál alapján)
+            elif current_signal == 0 and in_position:
                 capital[-1] *= (1 - self.transaction_fee)
                 in_position = False
                 trade_count += 1
 
-            #2 Pénzmozgás (Holnap)
+            # --- 2️⃣ HOLNAPI HOZAM ÉS NAPON BELÜLI STOP LOSS ---
+            next_return = returns[i + 1]
+
             if in_position:
-                new_balance = capital[-1] * (1 + next_return)
-                capital.append(new_balance)
+                # Ha a holnapi esés eléri vagy meghaladja a stop-loss szintet
+                if next_return <= -self.stop_loss_pct:
+                    # Feltételezzük, hogy az order a stop-loss szinten teljesült (pl. pontosan -5%-nál)
+                    new_balance = capital[-1] * (1 - self.stop_loss_pct)
+
+                    # Levonjuk az eladási tranzakciós díjat is a kiszálláskor
+                    new_balance *= (1 - self.transaction_fee)
+
+                    capital.append(new_balance)
+                    in_position = False
+                    trade_count += 1
+                else:
+                    # Ha nem érte el a stop-losst, a normál napi hozamot kapjuk
+                    new_balance = capital[-1] * (1 + next_return)
+                    capital.append(new_balance)
+
             else:
+                # Ha nem vagyunk pozícióban, a tőke változatlan marad
                 capital.append(capital[-1])
 
         return np.array(capital), trade_count
@@ -72,8 +83,6 @@ class Backtester:
                 equity = data
                 trade_count = 0
 
-            #Egyszerűen annyi dátumot veszünk, ahány adatpontunk van
-            #Így garantáltan egyezni fog a méret (x és y)
             plot_dates = dates[:len(equity)]
 
             final_val = equity[-1]
