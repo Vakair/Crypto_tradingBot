@@ -20,7 +20,7 @@ TEST_SPLIT = 0.1
 
 # --- ÚJ STRATÉGIA PARAMÉTEREK ---
 LONG_THRESHOLD = 0.55  # Ha > 55% biztos -> LONG
-SHORT_THRESHOLD = 0.55  # Ha < 45% biztos -> SHORT
+SHORT_THRESHOLD = 0.35  # Ha < 45% biztos -> SHORT
 
 
 def apply_hedge_fund_strategy(probs):
