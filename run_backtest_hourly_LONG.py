@@ -7,14 +7,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from tensorflow.keras.models import load_model
 
-
 from src.backtester import Backtester
 
 # --- KONFIGURÁCIÓ ---
 SYMBOL_YF = "BTC-USD"
 
 # IDŐSZAK: 2025. Január 1-től MÁIG.
-# Ez garantálja, hogy a modell sosem látta ezeket az adatokat tanulás közben.
 START_DATE = "2025-01-01"
 END_DATE = datetime.now().strftime('%Y-%m-%d')
 
@@ -23,9 +21,9 @@ WINDOW_SIZE = 14
 MODEL_PATH = 'models/gru_model_hourly.keras'
 SCALER_PATH = 'models/scaler_hourly.pkl'
 
-# Stratégia beállítások
-LONG_THRESHOLD = 0.52  # 52% felett LONG
-SHORT_THRESHOLD = 0.48  # 48% alatt SHORT
+# Stratégia beállítások - CSAK LONG (Memóriával)
+LONG_THRESHOLD = 0.51  # 51% felett LONG
+EXIT_THRESHOLD = 0.49  # 49% alatt CASH
 
 
 def download_hourly_data():
@@ -33,12 +31,10 @@ def download_hourly_data():
     try:
         df = yf.download(SYMBOL_YF, start=START_DATE, interval=TIMEFRAME, progress=False)
 
-        # Yahoo Finance MultiIndex javítása (ha van)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
 
         df = df.rename(columns={'Close': 'close'})
-        # Ellenőrzés, hogy van-e adat
         if df.empty:
             print("!!! Hiba: Üres adat érkezett! !!!")
             return pd.DataFrame()
@@ -54,7 +50,6 @@ def download_hourly_data():
 def feature_engineering(df):
     print("Indikátorok számítása...")
     df = df.copy()
-    # Ugyanazok a feature-ök, mint a tanításnál!
     df['SMA_10'] = df['close'].rolling(10).mean()
     df['SMA_50'] = df['close'].rolling(50).mean()
     df['target_return'] = df['close'].pct_change()
@@ -72,24 +67,24 @@ def feature_engineering(df):
     return df
 
 
-def apply_strategy(probs):
+def apply_long_only_strategy(probs):
     """
-    Átalakítja a 0-1 közötti valószínűséget jelekké:
-    1 (Long), -1 (Short), 0 (Cash)
+    Állapotmegőrző CSAK LONG stratégia.
+    Ha 0.49 és 0.51 között van, tartja az eddigi pozíciót.
     """
     signals = []
+    current_pos = 0
     for p in probs:
         if p > LONG_THRESHOLD:
-            signals.append(1)
-        elif p < SHORT_THRESHOLD:
-            signals.append(-1)
-        else:
-            signals.append(0)
+            current_pos = 1      # LONG-ba lép
+        elif p < EXIT_THRESHOLD:
+            current_pos = 0      # CASH-be lép (nincs short)
+        signals.append(current_pos)
     return np.array(signals)
 
 
 def main():
-    print(f"\nDAYTRADE (1h) BACKTEST INDÍTÁSA...")
+    print(f"\nDAYTRADE (1h) BACKTEST INDÍTÁSA - CSAK LONG VERZIÓ...")
     print(f"   Modell: {MODEL_PATH}")
     print(f"   Időszak: {START_DATE} -> {END_DATE} (Out-of-Sample)")
     print("-" * 50)
@@ -102,14 +97,14 @@ def main():
     model = load_model(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
 
-    #Adat
+    # Adat
     df = download_hourly_data()
     if df.empty: return
 
     # Features
     df = feature_engineering(df)
 
-    #Adatok előkészítése a modellnek (Skálázás + Ablakozás)
+    # Adatok előkészítése a modellnek
     features = ['target_return', 'Dist_SMA10', 'Dist_SMA50', 'RSI', 'Momentum_3D']
     data_values = df[features].values
     data_scaled = scaler.transform(data_values)
@@ -119,19 +114,9 @@ def main():
         X_test.append(data_scaled[i - WINDOW_SIZE:i])
     X_test = np.array(X_test)
 
-    # 5. Adatok előkészítése a Backtesternek
-    # A Backtester a 'returns' tömböt várja.
-    # Fontos: A model a T időpontban dönt a T+1 mozgásról.
-    # A Backtester a 'returns' tömböt úgy indexeli, hogy returns[i+1].
-    # Ezért a legegyszerűbb, ha átadjuk a teljes 'pct_change' oszlopot,
-    # és a jeleket (signals) hozzáigazítjuk.
-
-    # Kivágjuk azokat a hozamokat és dátumokat, amikhez van X bemenetünk
-    # A df indexeiből levágjuk az első WINDOW_SIZE elemet
     aligned_returns = df['close'].pct_change().iloc[WINDOW_SIZE:].values
     aligned_dates = df.index[WINDOW_SIZE:]
 
-    # Biztonsági vágás: X_test és Returns hossza egyezzen
     min_len = min(len(X_test), len(aligned_returns))
     X_test = X_test[:min_len]
     aligned_returns = aligned_returns[:min_len]
@@ -139,26 +124,24 @@ def main():
 
     print(f"Tesztelt gyertyák száma: {len(X_test)}")
 
-    #Jóslás
+    # Jóslás
     print("Modell elemzése folyamatban...")
     probs = model.predict(X_test, verbose=0).flatten()
 
-    #Jelek generálása
-    signals = apply_strategy(probs)
+    # Jelek generálása (CSAK LONG)
+    signals = apply_long_only_strategy(probs)
 
-    #BACKTEST FUTTATÁSA
-    #src/backtester.py
-    # stop_loss_pct=0.01 -> 1% stop loss
+    # BACKTEST FUTTATÁSA - A Bot kap egy 3%-os stop-losst
     backtester = Backtester(initial_capital=1000, transaction_fee=0.001, stop_loss_pct=0.01)
 
     equity_curve, trade_count = backtester.run_strategy(aligned_returns, signals)
     sharpe, max_dd = backtester.calculate_metrics(equity_curve)
 
-    #Eredmények Kiírása
+    # Eredmények Kiírása
     final_balance = equity_curve[-1]
     profit_pct = ((final_balance - 1000) / 1000) * 100
 
-    print("\nPÉNZÜGYI JELENTÉS (2025 DAYTRADE):")
+    print("\nPÉNZÜGYI JELENTÉS (2025 DAYTRADE - LONG ONLY):")
     print("=" * 40)
     print(f"Kezdő tőke:   $1,000.00")
     print(f"Végső tőke:   ${final_balance:,.2f}")
@@ -168,22 +151,19 @@ def main():
     print(f"Max Drawdown: {max_dd:.2f}%")
     print("=" * 40)
 
-    # Buy & Hold összehasonlítás - TÉNYLEGES B&H (100%-os stop-loss = sosem ad el)
+    # Buy & Hold összehasonlítás - KÜLÖN Backtester, 100%-os Stop-lossal (tehát kikapcsolva)
     bh_backtester = Backtester(initial_capital=1000, transaction_fee=0.001, stop_loss_pct=1.00)
     bh_signals = np.ones(len(aligned_returns))  # Mindig Long
-    bh_equity, bh_trades = bh_backtester.run_strategy(aligned_returns, bh_signals)
+    bh_equity, _ = bh_backtester.run_strategy(aligned_returns, bh_signals)
 
-    # Grafikon (plot_equity_curves metódussal)
+    # Grafikon
     results = {
-        'Daytrade Bot (1h)': {'equity': equity_curve, 'trades': trade_count},
-        'Buy & Hold (Ref)': {'equity': bh_equity, 'trades': bh_trades}
+        'Daytrade Bot (1h) LONG ONLY': {'equity': equity_curve, 'trades': trade_count},
+        'Buy & Hold (Ref)': {'equity': bh_equity, 'trades': 1}
     }
 
-
     print("Grafikon rajzolása...")
-    # A plot_equity_curves alapból elmenti, de a fájlnév a backtesterben van fixűlva.
-    backtester.plot_equity_curves(aligned_dates, results, title="Daytrade (Hourly) vs Buy & Hold - 2025")
-
+    backtester.plot_equity_curves(aligned_dates, results, title="Daytrade (Hourly) LONG ONLY vs Buy & Hold - 2025")
 
 if __name__ == "__main__":
     main()

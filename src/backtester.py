@@ -10,53 +10,48 @@ class Backtester:
         self.stop_loss_pct = stop_loss_pct
 
     def run_strategy(self, returns, signals):
-        """
-        Long/Short Backtesting.
-        signals:
-            1 = LONG
-            -1 = SHORT
-            0 = CASH
-        """
         capital = [self.initial_capital]
         current_position = 0  # 0: Cash, 1: Long, -1: Short
         trade_count = 0
 
-        # Look-ahead safe loop
         for i in range(len(returns) - 1):
             signal = signals[i]
-            next_return = returns[i + 1]  # Holnapi hozam
+            next_return = returns[i + 1]  # Hozam T és T+1 között
 
-            # --- STOP LOSS LOGIKA ---
-            force_close = False
-            # Longnál: ha esik az ár
-            if current_position == 1 and next_return < -self.stop_loss_pct:
-                force_close = True
-            # Shortnál: ha NŐ az ár (az nekünk rossz)
-            elif current_position == -1 and next_return > self.stop_loss_pct:
-                force_close = True
-
-            #1 Kereskedési döntés (Váltás)
-            # Ha STOP-LOSS van, vagy a jel más, mint a mostani pozíció
-            if force_close or (signal != current_position):
-
-                # Ha volt nyitott pozíció, azt le kell zárni (költség)
+            # 1. LÉPÉS: Kereskedési döntés a modell JELZÉSE alapján (Mielőtt a piac mozog)
+            if signal != current_position:
+                # Ha volt nyitott pozíció, azt lezárjuk (költség)
                 if current_position != 0:
                     capital[-1] *= (1 - self.transaction_fee)
 
-                # Ha nyitunk újat (és nem csak stop-loss miatti kényszerzárás van)
-                if not force_close and signal != 0:
+                # Ha nyitunk újat
+                if signal != 0:
                     capital[-1] *= (1 - self.transaction_fee)
                     trade_count += 1
 
-                # Ha force close volt, akkor készpénzbe megyünk, amúgy a jel szerint
-                current_position = 0 if force_close else signal
+                current_position = signal
 
-            #2 Pénzmozgás (Holnap)
+            # 2. LÉPÉS: Pénzmozgás és Stop-Loss (A piac megmozdul)
             if current_position == 1:  # LONG
-                capital.append(capital[-1] * (1 + next_return))
-            elif current_position == -1:  # SHORT (Inverz hozam)
-                capital.append(capital[-1] * (1 - next_return))
+                if next_return < -self.stop_loss_pct:
+                    # Kiestünk a stop-loss miatt! A VESZTESÉGET LEVONJUK!
+                    capital.append(capital[-1] * (1 - self.stop_loss_pct))
+                    current_position = 0  # Kényszerzárás a következő körre
+                    capital[-1] *= (1 - self.transaction_fee)  # Tőzsdei díj a zárásért
+                else:
+                    capital.append(capital[-1] * (1 + next_return))
+
+            elif current_position == -1:  # SHORT
+                if next_return > self.stop_loss_pct:
+                    # Short stop-loss! (Nekünk a növekedés a rossz)
+                    capital.append(capital[-1] * (1 - self.stop_loss_pct))
+                    current_position = 0  # Kényszerzárás
+                    capital[-1] *= (1 - self.transaction_fee)
+                else:
+                    capital.append(capital[-1] * (1 - next_return))
+
             else:  # CASH
+                # Készpénzben ülünk, nincs változás
                 capital.append(capital[-1])
 
         return np.array(capital), trade_count
@@ -99,6 +94,6 @@ class Backtester:
         plt.ylabel("Portfólió Érték (USD)")
         plt.legend()
         plt.grid(True, alpha=0.3)
-        plt.savefig('results/final_profit_chart_LONG/SHORT.png')
+        plt.savefig('results/final_profit_chart_LONG_SHORT.png')
         print(f"\nGrafikon elmentve: results/final_profit_chart_LONG/SHORT.png")
         plt.show()
